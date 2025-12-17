@@ -12,11 +12,6 @@ clean:
 clobber: clean
 	@${RM} .installed-requirements
 
-.installed-qemu:
-	@echo "Installing QEMU and required packages..."
-	@./install-qemu.sh
-	@touch $@
-
 .installed-requirements:
 	@echo "Installing required packages..."
 	@./pre-build.sh

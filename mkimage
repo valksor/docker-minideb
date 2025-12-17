@@ -7,24 +7,26 @@ ROOT=$(cd "$(dirname "$0")" && pwd)
 
 TARGET=${1:?Specify the target filename}
 DIST=${2:-stable}
-PLATFORM=${3:-$(dpkg --print-architecture)}
 
 LOGFILE=${TARGET}.log
 
 :>"$LOGFILE"
+# Ensure log file has proper permissions to prevent EACCES errors
+chmod 666 "$LOGFILE" 2>/dev/null || true
 exec >  >(tee -ia "$LOGFILE")
 exec 2> >(tee -ia "$LOGFILE" >&2)
 
 DEBOOTSTRAP_DIR=$(mktemp -d)
-cp -a /usr/share/debootstrap/* "$DEBOOTSTRAP_DIR"
+# Copy system debootstrap functions, but not scripts (to avoid conflicts)
+mkdir -p "$DEBOOTSTRAP_DIR/scripts"
+cp -a /usr/share/debootstrap/functions "$DEBOOTSTRAP_DIR/" 2>/dev/null || true
+cp -a /usr/share/debootstrap/scripts/debian-common "$DEBOOTSTRAP_DIR/scripts/" 2>/dev/null || true
 cp -aL /usr/share/keyrings/debian-archive-keyring.gpg "$DEBOOTSTRAP_DIR"
+# Copy our local debootstrap scripts (they are self-contained)
 cp -a "${ROOT}/debootstrap/"* "${DEBOOTSTRAP_DIR}/scripts"
 
 KEYRING=$DEBOOTSTRAP_DIR/debian-archive-keyring.gpg
 
-use_qemu_static() {
-    [[ "$PLATFORM" == "arm64" && ! ( "$(uname -m)" == *arm* || "$(uname -m)" == *aarch64* ) ]]
-}
 
 export DEBIAN_FRONTEND=noninteractive
 
@@ -35,17 +37,28 @@ DIRS_TO_TRIM="/usr/share/man
 /var/log
 /usr/share/info
 /dev
+/usr/share/groff
+/usr/share/man-db
+/usr/local/share/man
+/usr/local/man
+/usr/X11R6/man
 "
 
-debootstrap_arch_args=( )
-
-if use_qemu_static ; then
-    debootstrap_arch_args+=( --arch "$PLATFORM" )
-fi
+ARCH="${ARCH:-arm64}"
+debootstrap_arch_args=( --arch "$ARCH" )
 
 rootfsDir=$(mktemp -d)
 echo "Building base in $rootfsDir"
-DEBOOTSTRAP_DIR="$DEBOOTSTRAP_DIR" debootstrap "${debootstrap_arch_args[@]}"  --keyring "$KEYRING" --variant container --foreign "${DIST}" "$rootfsDir"
+DEBOOTSTRAP_DIR="$DEBOOTSTRAP_DIR" debootstrap "${debootstrap_arch_args[@]}" --keyring "$KEYRING" --variant container "${DIST}" "$rootfsDir"
+
+# Debug: Verify debootstrap completed successfully
+echo "DEBUG: Debootstrap completed with exit code: $?"
+echo "DEBUG: Checking if rootfsDir exists and has content..."
+ls -la "$rootfsDir" || { echo "ERROR: rootfsDir not found"; exit 1; }
+echo "DEBUG: Verifying directory structure..."
+[ -d "$rootfsDir/etc" ] || { echo "ERROR: /etc directory missing"; exit 1; }
+[ -d "$rootfsDir/usr" ] || { echo "ERROR: /usr directory missing"; exit 1; }
+echo "DEBUG: Root filesystem structure verified successfully"
 
 # get path to "chroot" in our current PATH
 chrootPath="$(type -P chroot)"
@@ -57,37 +70,33 @@ rootfs_chroot() {
 
 }
 
-if use_qemu_static ; then
-    echo "Setting up qemu static in chroot"
-    usr_bin_modification_time=$(stat -c %y "$rootfsDir"/usr/bin)
-    if [ -f "/usr/bin/qemu-aarch64-static" ]; then
-        find /usr/bin/ -type f -name 'qemu-*-static' -exec cp {} "$rootfsDir"/usr/bin/. \;
-    else
-        echo "Cannot find aarch64 qemu static. Aborting..." >&2
-        exit 1
-    fi
-    touch -d "$usr_bin_modification_time" "$rootfsDir"/usr/bin
-fi
-
-rootfs_chroot bash debootstrap/debootstrap --second-stage
 
 repo_url="http://deb.debian.org/debian"
 sec_repo_url_1="${repo_url}-security"
-sec_repo_url_2="http://security.debian.org/debian-security"
 
+# Debug: Starting sources.list configuration
+echo "DEBUG: Starting sources.list configuration"
+[ -d "$rootfsDir/etc" ] || { echo "ERROR: $rootfsDir/etc does not exist"; exit 1; }
+echo "DEBUG: etc directory verified, creating sources.list"
 echo -e "deb ${repo_url} $DIST main" > "$rootfsDir/etc/apt/sources.list"
-if [ "$DIST" == "bookworm" ] || [ "$DIST" == "trixie" ]; then
+echo "DEBUG: sources.list created successfully"
+if [ "$DIST" == "sid" ]; then
+    # Sid (Debian unstable) doesn't have separate security or updates repositories
+    echo "deb ${repo_url} $DIST main" >> "$rootfsDir/etc/apt/sources.list"
+elif [ "$DIST" == "trixie" ]; then
     echo "deb ${repo_url} $DIST-updates main" >> "$rootfsDir/etc/apt/sources.list"
     echo "deb ${sec_repo_url_1} $DIST-security main" >> "$rootfsDir/etc/apt/sources.list"
-elif [ "$DIST" == "bullseye" ]; then
-    echo "deb ${repo_url} $DIST-updates main" >> "$rootfsDir/etc/apt/sources.list"
-    echo "deb ${sec_repo_url_2} $DIST-security main" >> "$rootfsDir/etc/apt/sources.list"
 fi
 
+echo "DEBUG: Sources.list configuration completed, starting apt operations"
 rootfs_chroot apt-get update
+echo "DEBUG: apt-get update completed successfully"
 rootfs_chroot apt-get upgrade -y -o Dpkg::Options::="--force-confdef"
+echo "DEBUG: apt-get upgrade completed successfully"
 
+echo "DEBUG: Creating package manifest"
 rootfs_chroot dpkg -l | tee "$TARGET.manifest"
+echo "DEBUG: Package manifest created successfully"
 
 echo "Applying docker-specific tweaks"
 # These are copied from the docker contrib/mkimage/debootstrap script.
@@ -253,13 +262,29 @@ BUILD_DATE="$(find "$rootfsDir/usr/share/doc" -name changelog.Debian.gz -print0 
 set -o pipefail
 
 
-echo "Trimming down"
+echo "Trimming down directories with robust error handling"
 for DIR in $DIRS_TO_TRIM; do
-  rm -r "${rootfsDir:?rootfsDir cannot be empty}/$DIR"/*
+  if [ -d "${rootfsDir:?rootfsDir cannot be empty}${DIR}" ]; then
+    rm -rf "${rootfsDir:?rootfsDir cannot be empty}${DIR}/"* 2>/dev/null || true
+  fi
 done
 # Remove the aux-cache as it isn't reproducible. It doesn't seem to
 # cause any problems to remove it.
 rm "$rootfsDir/var/cache/ldconfig/aux-cache"
+# Handle /etc/machine-id for reproducible builds
+# Remove any existing machine-id and create empty file for runtime initialization
+if [ -f "$rootfsDir/etc/machine-id" ]; then
+    rm -f "$rootfsDir/etc/machine-id"
+fi
+if [ -f "$rootfsDir/var/lib/dbus/machine-id" ]; then
+    rm -f "$rootfsDir/var/lib/dbus/machine-id"
+fi
+
+# Create empty machine-id file (Debian container best practice)
+touch "$rootfsDir/etc/machine-id"
+
+# Ensure proper permissions (same as base-files package creates)
+chmod 644 "$rootfsDir/etc/machine-id"
 # Remove /usr/share/doc, but leave copyright files to be sure that we
 # comply with all licenses.
 # `mindepth 2` as we only want to remove files within the per-package
@@ -267,6 +292,37 @@ rm "$rootfsDir/var/cache/ldconfig/aux-cache"
 # dir (e.g. libgcc1), and we don't want to remove those.
 find "$rootfsDir/usr/share/doc" -mindepth 2 -not -name copyright -not -type d -delete
 find "$rootfsDir/usr/share/doc" -mindepth 1 -type d -empty -delete
+
+# Enhanced documentation cleanup - remove examples, readmes, changelogs
+echo "Removing additional documentation files"
+find "$rootfsDir/usr/share/doc" -name "examples" -type d -exec rm -rf {} + 2>/dev/null || true
+find "$rootfsDir/usr/share/doc" -name "README*" -delete 2>/dev/null || true
+find "$rootfsDir/usr/share/doc" -name "changelog*" -delete 2>/dev/null || true
+find "$rootfsDir/usr/share/doc" -name "NEWS*" -delete 2>/dev/null || true
+find "$rootfsDir/usr/share/doc" -name "TODO*" -delete 2>/dev/null || true
+find "$rootfsDir/usr/share/doc" -name "*.md" -delete 2>/dev/null || true
+find "$rootfsDir/usr/share/doc" -name "*.txt" -delete 2>/dev/null || true
+
+# Remove additional documentation directories
+echo "Removing additional documentation directories"
+find "$rootfsDir/usr/share/common-licenses" -type f ! -name "GPL*" ! -name "LGPL*" ! -name "BSD*" ! -name "Artistic*" -delete 2>/dev/null || true
+
+# Development file cleanup
+echo "Removing development files"
+find "$rootfsDir/usr/lib" -name "*.a" -delete 2>/dev/null || true
+find "$rootfsDir/usr/lib" -name "*.la" -delete 2>/dev/null || true
+
+# Enhanced locale cleanup - keep only essential locales
+echo "Optimizing locale data"
+find "$rootfsDir/usr/share/locale" -type d ! -name "en_US" ! -name "C" ! -name "locale.alias" -exec rm -rf {} + 2>/dev/null || true
+
+# Comprehensive man page cleanup for any remaining man pages
+echo "Removing all remaining man page directories"
+rm -rf "$rootfsDir/usr/local/share/man" 2>/dev/null || true
+rm -rf "$rootfsDir/usr/local/man" 2>/dev/null || true
+rm -rf "$rootfsDir/usr/X11R6/man" 2>/dev/null || true
+find "$rootfsDir/opt" -name "man" -type d -exec rm -rf {} + 2>/dev/null || true
+
 # Set the mtime on all files to be no older than $BUILD_DATE.
 # This is required to have the same metadata on files so that the
 # same tarball is produced. We assume that it is not important
@@ -282,14 +338,15 @@ echo "Largest dirs"
 du "$rootfsDir" | sort -n | tail -n 20
 echo "Built in $rootfsDir"
 
-if use_qemu_static ; then
-    echo "Cleaning up qemu static files from image"
-    usr_bin_modification_time=$(stat -c %y "$rootfsDir"/usr/bin)
-    rm -rf "$rootfsDir"/usr/bin/qemu-*-static
-    touch -d "$usr_bin_modification_time" "$rootfsDir"/usr/bin
-fi
-
+echo "DEBUG: Starting tar creation"
+echo "DEBUG: Target file: $TARGET"
+echo "DEBUG: Root filesystem size:"
+du -sh "$rootfsDir"
+echo "DEBUG: Creating tar archive..."
 tar cf "$TARGET" -C "$rootfsDir" .
+echo "DEBUG: Tar archive created successfully"
+echo "DEBUG: Target file size: $(stat -c %s "$TARGET" | numfmt --to=iec)"
+
 rm -r "$rootfsDir"
 rm -r "$DEBOOTSTRAP_DIR"
 

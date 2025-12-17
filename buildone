@@ -33,7 +33,7 @@ set -e
 set -u
 set -o pipefail
 
-BASENAME=bitnami/minideb
+BASENAME=valksor/minideb
 
 mkdir -p build
 
@@ -43,10 +43,15 @@ log() {
 
 build() {
     DIST=$1
-    PLATFORM=${2:-amd64}
-    TAG=$DIST-$PLATFORM
+    PLATFORM=${2:?Specify the target platform (amd64 | arm64)}
+    TAG="${DIST}-${PLATFORM}"
 
-    [ -f "debootstrap/$DIST" ] || (echo "buildall: Unknown distribution: $DIST" && exit 1)
+    [ -f "debootstrap/$DIST" ] || (echo "buildone: Unknown distribution: $DIST" && exit 1)
+
+    # Clean up any existing log files to prevent permission conflicts
+    echo "Cleaning up existing log files for $TAG..."
+    rm -f "build/$TAG.tar.log" "build/${TAG}-repro.tar.log" 2>/dev/null || true
+
     current_ts="$(date -u +%Y-%m-%dT%H:%M:%S.%NZ)"
     if docker pull "$BASENAME:$TAG" > /dev/null; then
         target_ts="$(docker inspect "$BASENAME:$TAG" | jq --raw-output ".[0].Created")"
@@ -58,7 +63,7 @@ build() {
     log "============================================"
     log "Building $BASENAME:$TAG"
     log "============================================"
-    ./mkimage "build/$TAG.tar" "$DIST" "$PLATFORM"
+    ARCH="$PLATFORM" ./mkimage "build/$TAG.tar" "$DIST"
     built_image_id=$(./import "build/$TAG.tar" "$target_ts" "$PLATFORM")
     log "============================================"
     log "Running tests for $BASENAME:$TAG"
@@ -67,7 +72,7 @@ build() {
     log "============================================"
     log "Rebuilding $BASENAME:$TAG to test reproducibility"
     log "============================================"
-    ./mkimage "build/${TAG}-repro.tar" "$DIST" "$PLATFORM"
+    ARCH="$PLATFORM" ./mkimage "build/${TAG}-repro.tar" "$DIST"
     repro_image_id=$(./import "build/${TAG}-repro.tar" "$target_ts" "$PLATFORM")
     if [ "$repro_image_id" != "$built_image_id" ]; then
         log "$BASENAME:$TAG differs after a rebuild. Examine $built_image_id and $repro_image_id"
@@ -92,11 +97,17 @@ build() {
     fi
     docker tag "$built_image_id" "$BASENAME:$TAG"
     log "Tagged $built_image_id as $BASENAME:$TAG"
+
+    # Fix permissions on all log files to prevent future conflicts
+    echo "Fixing permissions on log files..."
+    if [ -d "build" ]; then
+        find build/ -name "*.log" -exec chmod 666 {} \; 2>/dev/null || true
+    fi
 }
 
-if [ -z "$1" ]; then
-    echo "You must specify the dist to build"
+if [ "$#" -lt 2 ]; then
+    echo "Usage: $0 <distro> <arch>   (e.g., $0 sid arm64)"
     exit 1
 fi
 
-build "$@"
+build "$1" "$2"

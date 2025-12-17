@@ -4,11 +4,12 @@ set -e
 set -u
 set -o pipefail
 
-DIST=${1:?Specify the distrubution name}
-PLATFORM=${2:-amd64}
+DIST=${1:?Specify the distribution name}
+ARCH=${2:?Specify the arch (amd64 | arm64)}
+TAG="${DIST}-${ARCH}"
 
-BASENAME=bitnami/minideb
-DOCKER_REGISTRY=${DOCKER_REGISTRY:-"docker.io"}
+BASENAME=valksor/minideb
+DOCKER_REGISTRY=${DOCKER_REGISTRY:-"ghcr.io"}
 
 if [ -n "${DOCKER_PASSWORD:-}" ]; then
     echo "$DOCKER_PASSWORD" | docker login -u "$DOCKER_USERNAME" --password-stdin "${DOCKER_REGISTRY}"
@@ -25,9 +26,9 @@ if [ -n "${DOCKER_CONTENT_TRUST_REPOSITORY_PASSPHRASE:-}" ] && [ -n "${DOCKER_CO
 fi
 
 push() {
-    local dist="$1"
-    docker tag "${BASENAME}:${dist}" "${DOCKER_REGISTRY}/${BASENAME}:${dist}"
-    DOCKER_CONTENT_TRUST=${ENABLE_DOCKER_CONTENT_TRUST} docker push "${DOCKER_REGISTRY}/${BASENAME}:${dist}"
+    local tag="$1"
+    docker tag "${BASENAME}:${tag}" "${DOCKER_REGISTRY}/${BASENAME}:${tag}"
+    DOCKER_CONTENT_TRUST=${ENABLE_DOCKER_CONTENT_TRUST} docker push "${DOCKER_REGISTRY}/${BASENAME}:${tag}"
 }
 
-push "$DIST-${PLATFORM}"
+push "$TAG"

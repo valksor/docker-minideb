@@ -1,13 +1,13 @@
 inputs:
   dist:
     description: 'Dist to build'
-    default: 'bookworm'
-  platform:
-    description: 'Platform to build'
-    default: 'amd64'
+    default: 'sid'
+  arch:
+    description: 'Target architecture (amd64 | arm64)'
+    required: true
   is_latest:
     description: The created dist is also latest
-    default: false
+    default: 'false'
 runs:
   using: "composite"
   steps:
@@ -19,24 +19,27 @@ runs:
       shell: bash
     - run: sudo make .installed-requirements
       shell: bash
-    - name: "Install QEMU"
+    - name: "Clean build directory"
       run: |
-        set -x
-        if [[ "${{ inputs.platform }}" == "arm64" && "$(uname -m)" != "aarch64"  ]]; then
-          echo "Installing QEMU"
-          sudo apt-get update -qq && sudo apt-get install -y qemu-user-static
-        else
-          echo "QEMU is not required for platform ${{ inputs.platform }}"
-        fi
+        echo "Cleaning build directory to prevent permission conflicts"
+        sudo rm -rf build/ || true
+        mkdir -p build/
       shell: bash
     - name: "Build image"
       run: |
         set -x
-        echo Building  ${{ inputs.dist }} - ${{ inputs.platform }}
-        sudo -E bash -x buildone "${{ inputs.dist }}" "${{ inputs.platform }}"
+        echo "Building ${{ inputs.dist }} for ${{ inputs.arch }}"
+        sudo -E bash -x buildone "${{ inputs.dist }}" "${{ inputs.arch }}"
         if ${{ inputs.is_latest }} ; then
           BASENAME=${BASENAME:?Undefined or empty BASENAME}
-          echo "Tagging latest"
-          docker tag $BASENAME:${{ inputs.dist }}-${{ inputs.platform }} $BASENAME:latest-${{ inputs.platform }}
+          docker tag "$BASENAME:${{ inputs.dist }}-${{ inputs.arch }}" "$BASENAME:latest-${{ inputs.arch }}"
+        fi
+      shell: bash
+    - name: "Fix build permissions"
+      run: |
+        echo "Fixing permissions on build directory to prevent future conflicts"
+        if [ -d "build" ]; then
+          sudo chown -R $USER:$USER build/ || true
+          sudo chmod -R u+rw build/ || true
         fi
       shell: bash

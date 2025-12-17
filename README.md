@@ -1,3 +1,16 @@
+# Fork Notice
+
+[![valksor](https://badgen.net/static/org/valksor/green)](https://github.com/valksor)  
+
+This is a fork of [bitnami/minideb](https://github.com/bitnami/minideb).
+
+- **For upstream issues/PRs**: Please submit to the original bitnami/minideb repository
+- **For fork-specific issues**: Only open issues here if related to valksor/minideb customizations
+- **Image**: `ghcr.io/valksor/minideb` (GitHub Container Registry)
+- **Architecture**: ARM64 only, optimized for self-hosted runners
+
+---
+
 <p align="center">
     <img width="400px" height=auto src="https://dyltqmyl993wv.cloudfront.net/bitnami/bitnami-by-vmware.png" />
 </p>
@@ -17,19 +30,23 @@ A minimalist Debian-based image built specifically to be used as a base image fo
 # Use Minideb
 You can use the image directly, e.g.
 ```
-$ docker run --rm -it bitnami/minideb:latest
+$ docker run --rm -it ghcr.io/valksor/minideb:latest
 ```
 
-There are [tags](https://hub.docker.com/r/bitnami/minideb/tags/) for the different Debian releases.
+There are tags for the different Debian releases. The default is sid (Debian unstable).
 ```
-$ docker run --rm -it bitnami/minideb:trixie
+$ docker run --rm -it ghcr.io/valksor/minideb:latest
+$ docker run --rm -it ghcr.io/valksor/minideb:sid
+$ docker run --rm -it ghcr.io/valksor/minideb:trixie
 ```
 
-The images are built daily and have the security release enabled, so will contain any security updates released more than 24 hours ago.
+The images are built on push to master and have the security release enabled, so will contain any security updates released more than 24 hours ago.
 
 You can also use the images as a base for your own `Dockerfile`:
 ```
-FROM bitnami/minideb:trixie
+FROM ghcr.io/valksor/minideb:latest
+# or explicitly:
+FROM ghcr.io/valksor/minideb:sid
 ```
 
 # Why use Minideb
@@ -70,14 +87,14 @@ We provide a Makefile to help you build Minideb locally. It should be run on a D
 $ sudo make
 ```
 
-To build an individual release (bullseye, bookworm or trixie)
+To build an individual release (trixie, or sid)
 ```
-$ sudo make trixie
+$ sudo make sid
 ```
 
 To test the resulting image:
 ```
-$ sudo make test-trixie
+$ sudo make test-sid
 ```
 
 Building the image with podman instead of docker is possible, if you replace docker with podman in 4 scripts:
@@ -85,23 +102,51 @@ Building the image with podman instead of docker is possible, if you replace doc
 $ sed -i "s/docker /podman /g" buildone dockerdiff import test
 ```
 
-## Building Minideb for foreign architecture
-Make commands shown above will build an image for the architecture you are currently working on.
-To build an image for a foreign architecture (for example to build a multi-arch image), we provide a
-simple script that runs a QEMU instance for the target architecture and builds the image inside it.
+## Multi-arch Configuration (Fork Specific)
 
-To build and test a trixie image for arm64:
+This fork publishes multi-arch images for `linux/amd64` and `linux/arm64`. CI builds each arch natively on its own runner and then assembles a single multi-arch manifest list per tag (`:sid`, `:trixie`, `:latest`), so consumers can `FROM ghcr.io/valksor/minideb:sid` from any host architecture.
+
+### Runners used by CI
+
+- **arm64**: a self-hosted runner with the `self-arm` label (running on ARM64 hardware — Raspberry Pi 4/5, AWS Graviton, etc.).
+- **amd64**: GitHub-hosted `ubuntu-24.04` (no extra setup required).
+
+To set up the arm64 self-hosted runner:
+
+1. **Set up ARM64 hardware**
+2. **Install Docker**:
+   ```bash
+   curl -fsSL https://get.docker.com -o get-docker.sh
+   sudo sh get-docker.sh
+   sudo usermod -aG docker $USER
+   ```
+3. **Install GitHub Actions runner** with the `self-arm` label:
+   ```bash
+   ./config.sh --labels self-arm
+   sudo ./svc.sh install
+   sudo ./svc.sh start
+   ```
+
+### Building images locally
+
+`buildone` and `buildall` accept an architecture argument:
+
+```bash
+# Build a single dist for a single arch
+sudo ./buildone trixie arm64
+sudo ./buildone sid amd64
+
+# Build all dists × arches (defaults to "amd64 arm64")
+sudo ./buildall
+
+# Restrict to one arch
+ARCHS="arm64" sudo ./buildall
 ```
-$ ./qemu_build trixie arm64
-```
 
-The image will be then imported locally through the docker CLI with the `$distribution-$architecture` tag
-(example: `bitnami/minideb:trixie-arm64`)
+Cross-arch local builds require QEMU/binfmt on the host. Native-arch local builds need no extra setup.
 
-Current limitations of the `qemu_build` script:
+The `make trixie` / `make sid` shortcuts call `mkimage` directly and default to `ARCH=arm64`; pass `ARCH=amd64 sudo make trixie` to override.
 
-- Can be run only on Debian-based distributions
-- Support `AMD64` and `ARM64` target architectures only
 
 # Contributing
 We'd love for you to contribute to this image. You can request new features by creating an [issue](https://github.com/bitnami/minideb/issues), or submit a [pull request](https://github.com/bitnami/minideb/pulls) with your contribution.

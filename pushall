@@ -4,11 +4,11 @@ set -e
 set -u
 set -o pipefail
 
-DISTS="bullseye
-bookworm
+DISTS="sid
+trixie
 "
-LATEST=bookworm
-BASENAME=bitnami/minideb
+LATEST=sid
+BASENAME=valksor/minideb
 
 if [ -n "${DOCKER_PASSWORD:-}" ]; then
     docker login -u "$DOCKER_USERNAME" -p "$DOCKER_PASSWORD"

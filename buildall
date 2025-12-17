@@ -1,19 +1,18 @@
 #!/bin/bash
 
-# Build a minideb image for each supported dist
+# Build minideb images for each supported dist × arch.
+# Note: cross-arch builds require QEMU/binfmt on the host; for native-arch only,
+# pass ARCHS via env, e.g. ARCHS="arm64" ./buildall
 
 set -e
 set -u
 set -o pipefail
 
-arch=${1:-"amd64 arm64"}
+ARCHS=${ARCHS:-"amd64 arm64"}
+DISTS=${DISTS:-"trixie sid"}
 
-dist="bullseye
-bookworm
-trixie
-"
-for a in $arch; do
-  for i in $dist; do
+for a in $ARCHS; do
+  for i in $DISTS; do
     ./buildone "$i" "$a"
   done
 done
